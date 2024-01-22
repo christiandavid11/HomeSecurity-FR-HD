@@ -1,0 +1,351 @@
+# import time
+# import face_recognition
+# import pickle
+# import cv2
+# from datetime import datetime
+# import base64
+# import asyncio
+
+# from krakenio import Client
+# from modules import detected, is_ready
+
+# class FaceRecognition:
+
+#     encodings='encodings.pickle'
+#     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+#     data = pickle.loads(open(encodings, "rb").read())
+#     recognize = 'output/authorize'
+#     unrecognize = 'output/unauthorize'
+
+#     def __init__(self, video_channel=0, output='output/video.avi', detection_method='hog'):
+#         self.output = output
+#         self.video_channel = video_channel
+#         self.detection_method = detection_method
+#         self.authorize_output = 'output/authorize'
+#         self.unauthorize_output = 'output/unauthorize'
+
+#         is_ready("face-recognized", True)
+
+
+#     async def face_recognize(self):
+#         cap = cv2.VideoCapture(self.video_channel)
+#         writer = None
+
+#         while True:
+#             start = time.time()
+#             ret, frame = cap.read()
+#             color = (0, 255, 0)
+
+#             if ret is False:
+#                 print('[ERROR] Something wrong with your camera...')
+#                 break
+
+#             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#             r = frame.shape[1] / float(rgb.shape[1])
+
+#             boxes = face_recognition.face_locations(rgb, model=self.detection_method)
+#             encodings = face_recognition.face_encodings(rgb, boxes)
+            
+#             names = []
+            
+#             if boxes and encodings:
+#                 for encoding in encodings:
+#                     matches = face_recognition.compare_faces(self.data["encodings"], encoding)
+#                     name = "Unknown"
+
+#                     if True in matches:
+#                         matchedIdxs = [i for (i, b) in enumerate(matches) if b]
+#                         counts = {}
+
+#                         for i in matchedIdxs:
+#                             name = self.data["names"][i]
+#                             counts[name] = counts.get(name, 0) + 1
+
+#                         name = max(counts, key=counts.get)
+
+#                     names.append(name)
+
+#                 for ((top, right, bottom, left), name) in zip(boxes, names):
+#                     top = int(top * r)
+#                     right = int(right * r)
+#                     bottom = int(bottom * r)
+#                     left = int(left * r)
+
+#                     if name == "Unknown":
+#                         photo = f'{self.unauthorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg'
+#                         cv2.imwrite(photo, frame)
+#                         #string_photo = ""
+#                         api = Client('945b1b651bb94cbde60be627bbaeacb3', 'd5c230f96920f767cb3dadfb4faf534dae1eaea7')
+#                         data = {
+#                             'wait': True
+#                         }
+
+#                         result = api.upload(photo, data)
+#                         img_url = ""
+#                         if result.get('success'):
+#                             img_url = result.get('kraked_url')
+#                             print (img_url)
+#                         else:
+#                             print (result.get('message'))
+                            
+#                         await detected(type="face-recognized", is_detected=False, name=name, uploaded_file=img_url)
+#                     else:
+#                         photo = f'{self.authorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg'
+                
+#                         cv2.imwrite(photo, frame)
+#                         api = Client('945b1b651bb94cbde60be627bbaeacb3', 'd5c230f96920f767cb3dadfb4faf534dae1eaea7')
+#                         data = {
+#                             'wait': True
+#                         }
+
+#                         result = api.upload(photo, data)
+#                         img_url = ""
+#                         if result.get('success'):
+#                             img_url = result.get('kraked_url')
+#                             print (img_url)
+#                         else:
+#                             print (result.get('message'))
+                        
+#                         await detected(type="face-recognized", is_detected=True, name=name, uploaded_file=img_url)
+
+#                     cv2.putText(frame, name, (5, 20), cv2.FONT_HERSHEY_SIMPLEX,
+#                         0.75, color, 2)
+
+#             cv2.imshow("Face Recognition", frame)
+#             print('- %s seconds -' % (time.time() - start))
+#             if cv2.waitKey(1) & 0xFF == ord('q'):
+#                 break
+
+#         is_ready("face-recognized", False)
+#         await detected(type="face-recognized", is_detected=False, name=name)
+#         cap.release()
+#         cv2.destroyAllWindows()
+import time
+import face_recognition
+import pickle
+import cv2
+from datetime import datetime
+import numpy as np
+from krakenio import Client
+
+
+from modules import detected, is_ready, YOLO_CFG, YOLO_WEIGHTS, get_classes
+
+class FaceRecognition:
+    net = cv2.dnn.readNet(YOLO_WEIGHTS, YOLO_CFG)
+    model = cv2.dnn_DetectionModel(net)
+    model.setInputParams(size=(320, 320), scale=1/255)
+
+    encodings='encodings.pickle'
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    data = pickle.loads(open(encodings, "rb").read())
+    recognize = 'output/authorize'
+    unrecognize = 'output/unauthorize'
+
+    def __init__(self, video_channel=0, output='output/video.avi', detection_method='hog'):
+        self.output = output
+        self.video_channel = video_channel
+        self.detection_method = detection_method
+        self.authorize_output = 'output/authorize'
+        self.unauthorize_output = 'output/unauthorize'
+        self.classes = get_classes()
+        is_ready("face-recognized", True)
+        is_ready("human-detected", True)
+
+
+    async def face_recognize(self):
+        from human.detection import HumanDetection
+        
+        cap = cv2.VideoCapture(self.video_channel)
+        
+        output_name = None
+        output_name = f'output/video/{datetime.now().strftime("%d_%m_%Y_%H_%M_%S")}_output.avi' \
+            if output_name is None else output_name
+
+        cap_human = cv2.VideoCapture(2, cv2.CAP_V4L)
+        cap_human.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap_human.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)  
+        out = cv2.VideoWriter(output_name, cv2.VideoWriter_fourcc(*"XVID"), 20.0, (1280,720))
+        hd = HumanDetection()
+
+        writer = None
+
+        roi = None
+
+
+        while True:
+            start = time.time()
+            # await hd.detection()
+            ret, frame = cap.read()
+            ret1, frame1 = cap_human.read()
+            color = (0, 255, 0)
+
+            if ret is False:
+                print('[ERROR] Something wrong with your camera...')
+                break
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            r = frame.shape[1] / float(rgb.shape[1])
+
+            boxes = face_recognition.face_locations(rgb, model=self.detection_method)
+            encodings = face_recognition.face_encodings(rgb, boxes)
+            
+            names = []
+            res = []
+
+            if not (cap_human.isOpened and ret1):
+                break
+
+            if roi is None:
+                roi = cv2.selectROI('roi', frame1)
+                cv2.destroyWindow('roi')
+            
+            (class_ids, scores, bboxes) =  self.model.detect(frame)
+
+            for class_id, score, bbox in zip(class_ids, scores, bboxes):
+                class_name = self.classes[class_id]
+                
+                if class_name == "person":
+                    res = [hd.check_intersection(np.array(box), np.array(roi)) for box in bboxes]
+                
+                #cv2.rectangle(frame,(self.roi[0],self.roi[1]), (self.roi[0]+self.roi[2],self.roi[1]+self.roi[3]), color, 2)
+            # from face.recognizer import FaceRecognition
+
+
+            if any(res):
+                string_photo = None
+                await detected("human-detected", True, string_photo)
+            # else:
+            #     string_photo = None
+            #     await detected("human-detected", False, string_photo)
+
+            # if any(res):
+            #     detected("human-detected", True)
+            # else:
+            #     detected("human-detected", False)
+
+
+            out.write(frame1)
+            cv2.imshow("Human Detection", frame1)
+
+            if boxes and encodings:
+                for encoding in encodings:
+                    matches = face_recognition.compare_faces(self.data["encodings"], encoding)
+                    name = "Unknown"
+
+                    if True in matches:
+                        matchedIdxs = [i for (i, b) in enumerate(matches) if b]
+                        counts = {}
+
+                        for i in matchedIdxs:
+                            name = self.data["names"][i]
+                            counts[name] = counts.get(name, 0) + 1
+
+                        name = max(counts, key=counts.get)
+
+                    names.append(name)
+
+                for ((top, right, bottom, left), name) in zip(boxes, names):
+                    top = int(top * r)
+                    right = int(right * r)
+                    bottom = int(bottom * r)
+                    left = int(left * r)
+
+                    
+
+                    if name == "Unknown":
+                        #detected("face-recognized", False, name)
+                        color = (0, 0, 255)
+                        # cv2.imwrite(
+                        #     f'{self.unauthorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg',
+                        #     frame
+                        # )
+                        photo = f'{self.unauthorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg'
+                        cv2.imwrite(photo, frame)
+                        api = Client('945b1b651bb94cbde60be627bbaeacb3', 'd5c230f96920f767cb3dadfb4faf534dae1eaea7')
+                        data = {
+                            'wait': True
+                        }
+
+                        result = api.upload(photo, data)
+                        img_url = ""
+                        if result.get('success'):
+                            img_url = result.get('kraked_url')
+                            print (img_url)
+                        else:
+                            print (result.get('message'))
+
+                        # conf.pub_key = '493b7ac806dbd073310b'
+                        # with open (photo, 'rb') as f:
+                        #     uploaded_file = File.store(f)
+                        # print(uploaded_file)
+                        #print(string_photo, type(string_photo))
+                        #detected("face-recognized", False, name, string_photo)
+                        await detected(type="face-recognized", is_detected=False, name=name, uploaded_file=img_url)
+
+                        ###
+                        # hd = HumanDetection()
+                        # await hd.detection()
+                        ###
+                    else:
+                        # detected("face-recognized", True, name)
+                        # cv2.imwrite(
+                        #     f'{self.authorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg',
+                        #     frame
+                        # )
+
+                        #detected("face-recognized", True, name)
+                        temp_name = f'{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg'
+                        #print(temp_name)
+                        photo = f'{self.authorize_output}/{datetime.now().strftime("%d_%m_%Y_%H_%M")}_{name}.jpg'
+                        cv2.imwrite(photo, frame)
+
+                        #################
+                        # string_photo = ""
+                        # temp = None
+                        # with open(photo, "rb") as img_file:
+                        #     temp = base64.b64encode(img_file.read())
+                        #print(temp, type(temp))
+                        #temp = temp[1:]
+                        #string_photo = temp.replace("'","")
+                        # string_photo = temp.decode("utf-8")
+                        #print(string_photo, type(string_photo))
+                        #detected("face-recognized", True, name, string_photo)
+                        api = Client('945b1b651bb94cbde60be627bbaeacb3', 'd5c230f96920f767cb3dadfb4faf534dae1eaea7')
+                        data = {
+                            'wait': True
+                        }
+
+                        result = api.upload(photo, data)
+                        img_url = ""
+                        if result.get('success'):
+                            img_url = result.get('kraked_url')
+                            print (img_url)
+                        else:
+                            print (result.get('message'))
+
+                        await detected(type="face-recognized", is_detected=True, name=name, uploaded_file=img_url)
+                        #print(my_string)
+                        
+
+                        ###
+                        # hd = HumanDetection()
+                        # await hd.detection()
+                        ###
+
+                    cv2.putText(frame, name, (5, 20), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75, color, 2)
+
+            print("--- %s seconds ---" % (time.time() - start))
+            cv2.imshow("Face Recognition", frame)
+                    
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        #name = ""
+        is_ready("face-recognized", False)
+        await detected("face-recognized", False, None, None)
+        is_ready("human-detected", False)
+        await detected("human-detected", False, None, None)
+        
+        cap.release()
+        cv2.destroyAllWindows()
